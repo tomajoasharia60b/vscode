@@ -93,25 +93,34 @@ export class AgentsWindow {
 
 		const itemSel = `.action-widget .monaco-list-row`;
 		const maxAttempts = 3;
+		const needle = label.toLowerCase();
 
 		// The picker click can silently do nothing if the active session
-		// isn't fully initialized yet. Retry the click until the dropdown
-		// rows appear.
-		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		// isn't fully initialized yet, and the dropdown is async-populated:
+		// providers (e.g. the AgentHost-backed Copilot CLI variant) can
+		// register a few seconds after the dropdown first renders. Retry
+		// opening the dropdown and poll its rows until the requested label
+		// appears, instead of just waiting for "any item".
+		let lastSeen: string[] = [];
+		outer: for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 			await this.code.waitAndClick(SESSION_TYPE_PICKER_VISIBLE);
-			try {
-				await this.code.waitForElement(itemSel, el => !!el && (el.textContent ?? '').trim().length > 0, 30 /* ~3 seconds */);
-				break;
-			} catch {
-				if (attempt === maxAttempts) {
-					throw new Error(`Session type picker did not populate after ${maxAttempts} attempts`);
+			const deadline = Date.now() + 10_000;
+			while (Date.now() < deadline) {
+				const items = await this.code.getElements(itemSel, /* recursive */ true);
+				lastSeen = (items ?? []).map(i => (i.textContent ?? '').trim());
+				if (lastSeen.some(t => t.toLowerCase().includes(needle))) {
+					break outer;
 				}
-				await new Promise(r => setTimeout(r, 2000));
+				await new Promise(r => setTimeout(r, 250));
 			}
+			if (attempt === maxAttempts) {
+				throw new Error(`Session type "${label}" not found in picker. Available: ${lastSeen.join(', ')}`);
+			}
+			await new Promise(r => setTimeout(r, 2000));
 		}
 
 		const items = await this.code.waitForElements(itemSel, /* recursive */ true);
-		const matchIndex = items.findIndex(el => (el.textContent ?? '').trim().toLowerCase().includes(label.toLowerCase()));
+		const matchIndex = items.findIndex(el => (el.textContent ?? '').trim().toLowerCase().includes(needle));
 		if (matchIndex < 0) {
 			throw new Error(`Session type "${label}" not found in picker. Available: ${items.map(i => (i.textContent ?? '').trim()).join(', ')}`);
 		}
